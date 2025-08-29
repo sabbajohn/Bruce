@@ -3,6 +3,7 @@
 
 #include <MenuItemInterface.h>
 
+#include "SubGHZMenu.h"
 #include "menu_items/BleMenu.h"
 #include "menu_items/ClockMenu.h"
 #include "menu_items/ConfigMenu.h"
@@ -34,6 +35,7 @@ public:
     RFIDMenu rfidMenu;
     RFMenu rfMenu;
     ScriptsMenu scriptsMenu;
+    SubGHZMenu subghzMenu;
     WifiMenu wifiMenu;
 #if !defined(LITE_VERSION)
     EthernetMenu ethernetMenu;

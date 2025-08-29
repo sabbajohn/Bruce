@@ -13,6 +13,7 @@ MainMenu::MainMenu() {
 #if !defined(REMOVE_RF_MENU)
         &rfMenu,
 #endif
+        &subghzMenu,
 #if !defined(REMOVE_RFID_MENU)
         &rfidMenu,
 #endif

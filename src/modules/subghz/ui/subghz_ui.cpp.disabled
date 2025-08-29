@@ -1,0 +1,587 @@
+#include "subghz/subghz_ui.h"
+#include "globals.h"
+#include "modules/rf/rf.h"
+#include "modules/sd_functions.h"
+#include <esp_log.h>
+
+static const char *TAG = "SubGhzUI";
+
+// Constructor
+SubGhzUI::SubGhzUI()
+    : _name("SubGHz"), current_state(STATE_MAIN_MENU), menu_index(0), is_running(false), subghz_core(nullptr),
+      receiver(nullptr), transmitter(nullptr), current_frequency(433.92f),
+      current_preset(SubGhzPreset2FSKDev476Async), current_power(10), is_recording(false),
+      recording_start_time(0), recording_duration(0), detection_count(0) {
+    initializeMenus();
+    loadSettings();
+}
+
+// Destructor
+SubGhzUI::~SubGhzUI() { cleanupSubGhz(); }
+
+void SubGhzUI::optionsMenu() {
+    if (!is_running) {
+        initializeSubGhz();
+        is_running = true;
+    }
+
+    showMainMenu();
+}
+
+void SubGhzUI::drawIcon(float scale) {
+    // Draw SubGHz icon
+    tft.drawRect(10 * scale, 10 * scale, 20 * scale, 10 * scale, TFT_WHITE);
+    tft.drawLine(15 * scale, 5 * scale, 15 * scale, 15 * scale, TFT_WHITE);
+    tft.drawLine(25 * scale, 5 * scale, 25 * scale, 15 * scale, TFT_WHITE);
+}
+
+void SubGhzUI::drawIconImg() {
+    // For theme-based icon drawing
+    drawIcon(1.0f);
+}
+
+bool SubGhzUI::getTheme() { return bruceConfig.theme.mode; }
+break;
+case STATE_FREQUENCY_ANALYZER: drawFrequencyAnalyzer(); break;
+case STATE_SIGNAL_RECORDER: drawSignalRecorder(); break;
+case STATE_SIGNAL_PLAYER: drawSignalPlayer(); break;
+case STATE_PROTOCOL_DECODER: drawProtocolDecoder(); break;
+case STATE_RAW_CAPTURE: drawRawCapture(); break;
+case STATE_SETTINGS: drawSettings(); break;
+    }
+
+    drawStatusBar();
+    }
+
+    void SubGhzUI::showMainMenu() {
+        current_state = STATE_MAIN_MENU;
+        menu_index = 0;
+
+        while (is_running) {
+            draw();
+            handleMainMenuInput();
+            delay(50);
+        }
+    }
+
+    void SubGhzUI::initializeMenus() {
+        main_menu_items = {
+            "Frequency Analyzer",
+            "Signal Recorder",
+            "Signal Player",
+            "Protocol Decoder",
+            "Raw Capture",
+            "Settings",
+            "Exit"
+        };
+
+        settings_menu_items = {
+            "Frequency: " + formatFrequency(current_frequency),
+            "Preset: " + getPresetName(current_preset),
+            "TX Power: " + String(current_power) + " dBm",
+            "Load Defaults",
+            "Save Settings",
+            "Back"
+        };
+    }
+
+    void SubGhzUI::initializeSubGhz() {
+        ESP_LOGI(TAG, "Initializing SubGHz UI");
+
+        // Create SubGHz core
+        subghz_core = subghz_core_create();
+        if (!subghz_core) {
+            ESP_LOGE(TAG, "Failed to create SubGHz core");
+            return;
+        }
+
+        // Get device from core
+        SubGhzDevice *device = subghz_core_get_device(subghz_core);
+        if (!device) {
+            ESP_LOGE(TAG, "Failed to get SubGHz device");
+            return;
+        }
+
+        // Create receiver
+        receiver = subghz_receiver_create(device);
+        if (!receiver) {
+            ESP_LOGE(TAG, "Failed to create receiver");
+            return;
+        }
+
+        // Create transmitter
+        transmitter = subghz_transmitter_create(device);
+        if (!transmitter) {
+            ESP_LOGE(TAG, "Failed to create transmitter");
+            return;
+        }
+
+        // Configure initial settings
+        SubGhzReceiverConfig rx_config = {0};
+        rx_config.frequency = current_frequency;
+        rx_config.preset = current_preset;
+        rx_config.rssi_threshold = -80;
+        rx_config.filter_enabled = false;
+        rx_config.raw_capture_enabled = false;
+        rx_config.timeout_ms = 0;
+
+        subghz_receiver_configure(receiver, &rx_config);
+
+        SubGhzTransmitterConfig tx_config = {0};
+        tx_config.frequency = current_frequency;
+        tx_config.preset = current_preset;
+        tx_config.tx_power = current_power;
+        tx_config.repeat = 1;
+        tx_config.gap_ms = 100;
+        tx_config.async_mode = true;
+
+        subghz_transmitter_configure(transmitter, &tx_config);
+
+        loadSavedSignals();
+
+        ESP_LOGI(TAG, "SubGHz UI initialized successfully");
+    }
+
+    void SubGhzUI::cleanupSubGhz() {
+        if (receiver) {
+            subghz_receiver_stop(receiver);
+            subghz_receiver_free(receiver);
+            receiver = nullptr;
+        }
+
+        if (transmitter) {
+            subghz_transmitter_stop(transmitter);
+            subghz_transmitter_free(transmitter);
+            transmitter = nullptr;
+        }
+
+        if (subghz_core) {
+            subghz_core_free(subghz_core);
+            subghz_core = nullptr;
+        }
+
+        ESP_LOGI(TAG, "SubGHz UI cleaned up");
+    }
+
+    void SubGhzUI::drawMainMenu() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(2);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("SubGHz Menu");
+
+        // Menu items
+        for (size_t i = 0; i < main_menu_items.size(); i++) {
+            int y = MARGIN + 30 + (i * MENU_ITEM_HEIGHT);
+
+            if (i == menu_index) {
+                tft.setTextColor(TFT_BLACK, TFT_WHITE);
+                tft.fillRect(MARGIN, y, SCREEN_WIDTH - 2 * MARGIN, MENU_ITEM_HEIGHT, TFT_WHITE);
+            } else {
+                tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            }
+
+            tft.setCursor(MARGIN + 5, y + 2);
+            tft.setTextSize(1);
+            tft.print(main_menu_items[i]);
+        }
+    }
+
+    void SubGhzUI::drawFrequencyAnalyzer() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("Frequency Analyzer");
+
+        // Current frequency
+        tft.setCursor(MARGIN, MARGIN + 20);
+        tft.print("Freq: " + formatFrequency(current_frequency));
+
+        // RSSI
+        if (receiver && subghz_receiver_is_running(receiver)) {
+            int32_t rssi = subghz_receiver_get_rssi(receiver);
+            tft.setCursor(MARGIN, MARGIN + 35);
+            tft.print("RSSI: " + formatRSSI(rssi));
+
+            // RSSI bar
+            int rssi_bar_width = map(constrain(rssi, -100, -30), -100, -30, 0, 150);
+            tft.fillRect(MARGIN, MARGIN + 50, rssi_bar_width, 10, TFT_GREEN);
+            tft.drawRect(MARGIN, MARGIN + 50, 150, 10, TFT_WHITE);
+        }
+
+        // Scan results
+        tft.setCursor(MARGIN, MARGIN + 70);
+        tft.print("Scan Results:");
+
+        int y_offset = MARGIN + 85;
+        for (size_t i = 0; i < frequency_scan_results.size() && i < 3; i++) {
+            const FrequencyData &data = frequency_scan_results[i];
+            tft.setCursor(MARGIN, y_offset + (i * 15));
+            tft.printf("%.2f MHz: %d dBm (%d)", data.frequency, data.rssi, data.activity_count);
+        }
+
+        // Instructions
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - 30);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.print("OK: Start/Stop  BACK: Exit");
+    }
+
+    void SubGhzUI::drawSignalRecorder() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("Signal Recorder");
+
+        // Recording status
+        tft.setCursor(MARGIN, MARGIN + 20);
+        if (is_recording) {
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.print("RECORDING...");
+
+            uint32_t elapsed = millis() - recording_start_time;
+            tft.setCursor(MARGIN, MARGIN + 35);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.print("Duration: " + formatDuration(elapsed));
+
+            // Progress bar
+            int progress = map(elapsed, 0, MAX_RECORDING_DURATION_MS, 0, 100);
+            drawProgressBar(MARGIN, MARGIN + 50, 150, 10, progress);
+        } else {
+            tft.setTextColor(TFT_GREEN, TFT_BLACK);
+            tft.print("READY");
+        }
+
+        // Current settings
+        tft.setCursor(MARGIN, MARGIN + 70);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print("Freq: " + formatFrequency(current_frequency));
+        tft.setCursor(MARGIN, MARGIN + 85);
+        tft.print("Preset: " + getPresetName(current_preset));
+
+        // Instructions
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - 30);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        if (is_recording) {
+            tft.print("OK: Stop Recording");
+        } else {
+            tft.print("OK: Start  BACK: Exit");
+        }
+    }
+
+    void SubGhzUI::drawSignalPlayer() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("Signal Player");
+
+        // Saved signals list
+        tft.setCursor(MARGIN, MARGIN + 20);
+        tft.print("Saved Signals:");
+
+        if (saved_signals.empty()) {
+            tft.setCursor(MARGIN, MARGIN + 40);
+            tft.setTextColor(TFT_GRAY, TFT_BLACK);
+            tft.print("No saved signals");
+        } else {
+            for (size_t i = 0; i < saved_signals.size() && i < 4; i++) {
+                int y = MARGIN + 40 + (i * 15);
+
+                if (i == menu_index) {
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+                    tft.fillRect(MARGIN, y, SCREEN_WIDTH - 2 * MARGIN, 12, TFT_WHITE);
+                } else {
+                    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+                }
+
+                tft.setCursor(MARGIN + 2, y + 1);
+                tft.print(saved_signals[i]);
+            }
+        }
+
+        // Transmission status
+        if (transmitter && subghz_transmitter_is_running(transmitter)) {
+            tft.setCursor(MARGIN, SCREEN_HEIGHT - 45);
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.print("TRANSMITTING...");
+        }
+
+        // Instructions
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - 30);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.print("OK: Play  UP/DOWN: Select");
+    }
+
+    void SubGhzUI::drawProtocolDecoder() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("Protocol Decoder");
+
+        // Decoder status
+        tft.setCursor(MARGIN, MARGIN + 20);
+        if (receiver && subghz_receiver_is_running(receiver)) {
+            tft.setTextColor(TFT_GREEN, TFT_BLACK);
+            tft.print("LISTENING...");
+        } else {
+            tft.setTextColor(TFT_GRAY, TFT_BLACK);
+            tft.print("STOPPED");
+        }
+
+        // Detection count
+        tft.setCursor(MARGIN, MARGIN + 35);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print("Detected: " + String(detection_count));
+
+        // Last detected protocol
+        if (!last_detected_protocol.isEmpty()) {
+            tft.setCursor(MARGIN, MARGIN + 55);
+            tft.print("Protocol: " + last_detected_protocol);
+
+            tft.setCursor(MARGIN, MARGIN + 70);
+            tft.print("Data: " + last_detected_data.substring(0, 20));
+
+            if (last_detected_data.length() > 20) {
+                tft.setCursor(MARGIN, MARGIN + 85);
+                tft.print("..." + last_detected_data.substring(20, 40));
+            }
+        }
+
+        // Instructions
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - 30);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.print("OK: Start/Stop  BACK: Exit");
+    }
+
+    void SubGhzUI::drawRawCapture() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("Raw Signal Capture");
+
+        // Capture status
+        tft.setCursor(MARGIN, MARGIN + 20);
+        if (receiver && subghz_receiver_is_running(receiver)) {
+            tft.setTextColor(TFT_RED, TFT_BLACK);
+            tft.print("CAPTURING...");
+        } else {
+            tft.setTextColor(TFT_GREEN, TFT_BLACK);
+            tft.print("READY");
+        }
+
+        // Sample count (placeholder)
+        tft.setCursor(MARGIN, MARGIN + 40);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.print("Samples: 0"); // TODO: Implement sample counting
+
+        // Buffer usage (placeholder)
+        tft.setCursor(MARGIN, MARGIN + 55);
+        tft.print("Buffer: 0%"); // TODO: Implement buffer monitoring
+
+        // Instructions
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - 30);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.print("OK: Start/Stop  BACK: Exit");
+    }
+
+    void SubGhzUI::drawSettings() {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.setTextSize(1);
+
+        // Title
+        tft.setCursor(MARGIN, MARGIN);
+        tft.print("SubGHz Settings");
+
+        // Update settings menu items
+        settings_menu_items[0] = "Frequency: " + formatFrequency(current_frequency);
+        settings_menu_items[1] = "Preset: " + getPresetName(current_preset);
+        settings_menu_items[2] = "TX Power: " + String(current_power) + " dBm";
+
+        // Menu items
+        for (size_t i = 0; i < settings_menu_items.size(); i++) {
+            int y = MARGIN + 30 + (i * MENU_ITEM_HEIGHT);
+
+            if (i == menu_index) {
+                tft.setTextColor(TFT_BLACK, TFT_WHITE);
+                tft.fillRect(MARGIN, y, SCREEN_WIDTH - 2 * MARGIN, MENU_ITEM_HEIGHT, TFT_WHITE);
+            } else {
+                tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            }
+
+            tft.setCursor(MARGIN + 5, y + 2);
+            tft.print(settings_menu_items[i]);
+        }
+    }
+
+    void SubGhzUI::drawStatusBar() {
+        // Status bar at bottom
+        tft.fillRect(0, SCREEN_HEIGHT - STATUS_BAR_HEIGHT, SCREEN_WIDTH, STATUS_BAR_HEIGHT, TFT_BLUE);
+        tft.setTextColor(TFT_WHITE, TFT_BLUE);
+        tft.setTextSize(1);
+        tft.setCursor(MARGIN, SCREEN_HEIGHT - STATUS_BAR_HEIGHT + 2);
+
+        // Show current frequency and preset
+        tft.print(formatFrequency(current_frequency) + " " + getPresetName(current_preset));
+
+        // Show battery or other status on the right
+        // TODO: Add battery status, time, etc.
+    }
+
+    void SubGhzUI::drawProgressBar(int x, int y, int width, int height, int progress) {
+        progress = constrain(progress, 0, 100);
+
+        // Background
+        tft.drawRect(x, y, width, height, TFT_WHITE);
+
+        // Fill
+        int fill_width = map(progress, 0, 100, 0, width - 2);
+        if (fill_width > 0) { tft.fillRect(x + 1, y + 1, fill_width, height - 2, TFT_GREEN); }
+    }
+
+    // Input handling methods will be implemented in the next part...
+    void SubGhzUI::handleMainMenuInput() {
+        // TODO: Implement input handling based on Bruce's input system
+        // This is a placeholder for now
+    }
+
+    // Utility methods
+    String SubGhzUI::formatFrequency(float frequency) { return String(frequency, 2) + " MHz"; }
+
+    String SubGhzUI::formatRSSI(int32_t rssi) { return String(rssi) + " dBm"; }
+
+    String SubGhzUI::formatDuration(uint32_t duration_ms) {
+        return String(duration_ms / 1000) + "." + String((duration_ms % 1000) / 100) + "s";
+    }
+
+    String SubGhzUI::getPresetName(SubGhzPreset preset) {
+        switch (preset) {
+            case SubGhzPresetOok270Async: return "OOK270";
+            case SubGhzPresetOok650Async: return "OOK650";
+            case SubGhzPreset2FSKDev238Async: return "2FSK238";
+            case SubGhzPreset2FSKDev476Async: return "2FSK476";
+            case SubGhzPresetMSK99_97KbAsync: return "MSK99";
+            case SubGhzPresetGFSK9_99KbAsync: return "GFSK9";
+            case SubGhzPresetCustom: return "Custom";
+            default: return "Unknown";
+        }
+    }
+
+    String SubGhzUI::getProtocolDescription(const String &protocol_name) {
+        if (protocol_name == "Princeton") return "Princeton 24-bit";
+        // Add more protocol descriptions as needed
+        return protocol_name;
+    }
+
+    // Settings management
+    void SubGhzUI::loadSettings() {
+        // TODO: Load settings from EEPROM or file system
+        ESP_LOGI(TAG, "Loading settings");
+    }
+
+    void SubGhzUI::saveSettings() {
+        // TODO: Save settings to EEPROM or file system
+        ESP_LOGI(TAG, "Saving settings");
+    }
+
+    void SubGhzUI::loadSavedSignals() {
+        // TODO: Load saved signals from SD card
+        saved_signals.clear();
+        saved_signals.push_back("signal1.sub");
+        saved_signals.push_back("signal2.sub");
+        saved_signals.push_back("signal3.sub");
+    }
+
+    // Static menu functions for main menu integration
+    void SubGhzUI::subghz_frequency_analyzer_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_FREQUENCY_ANALYZER;
+        ui.initializeSubGhz();
+        ui.startFrequencyAnalysis();
+        // Run frequency analyzer loop
+    }
+
+    void SubGhzUI::subghz_signal_recorder_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_SIGNAL_RECORDER;
+        ui.initializeSubGhz();
+        // Run signal recorder loop
+    }
+
+    void SubGhzUI::subghz_signal_player_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_SIGNAL_PLAYER;
+        ui.initializeSubGhz();
+        // Run signal player loop
+    }
+
+    void SubGhzUI::subghz_protocol_decoder_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_PROTOCOL_DECODER;
+        ui.initializeSubGhz();
+        ui.startProtocolDecoding();
+        // Run protocol decoder loop
+    }
+
+    void SubGhzUI::subghz_raw_capture_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_RAW_CAPTURE;
+        ui.initializeSubGhz();
+        ui.startRawCapture();
+        // Run raw capture loop
+    }
+
+    void SubGhzUI::subghz_settings_run() {
+        SubGhzUI ui;
+        ui.current_state = STATE_SETTINGS;
+        // Run settings loop
+    }
+
+    // Placeholder implementations for missing methods
+    void SubGhzUI::startFrequencyAnalysis() {
+        // TODO: Implement frequency analysis
+    }
+
+    void SubGhzUI::stopFrequencyAnalysis() {
+        // TODO: Implement stop frequency analysis
+    }
+
+    void SubGhzUI::startSignalRecording() {
+        // TODO: Implement signal recording
+    }
+
+    void SubGhzUI::stopSignalRecording() {
+        // TODO: Implement stop signal recording
+    }
+
+    void SubGhzUI::startProtocolDecoding() {
+        // TODO: Implement protocol decoding
+    }
+
+    void SubGhzUI::stopProtocolDecoding() {
+        // TODO: Implement stop protocol decoding
+    }
+
+    void SubGhzUI::startRawCapture() {
+        // TODO: Implement raw capture
+    }
+
+    void SubGhzUI::stopRawCapture() {
+        // TODO: Implement stop raw capture
+    }

@@ -1,0 +1,351 @@
+#include "subghz/subghz_integration.h"
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+static const char *TAG = "SubGhzIntegration";
+
+// Global SubGHz system state
+static bool g_subghz_initialized = false;
+static SubGhzCore *g_subghz_core = NULL;
+
+bool subghz_system_init(void) {
+    if (g_subghz_initialized) {
+        ESP_LOGW(TAG, "SubGHz system already initialized");
+        return true;
+    }
+
+    ESP_LOGI(TAG, "Initializing SubGHz system v%s", SUBGHZ_VERSION_STRING);
+
+    // Step 1: Initialize memory management
+    if (!subghz_memory_init()) {
+        ESP_LOGE(TAG, "Failed to initialize memory system");
+        return false;
+    }
+
+    // Step 2: Create core system
+    g_subghz_core = subghz_core_create();
+    if (!g_subghz_core) {
+        ESP_LOGE(TAG, "Failed to create SubGHz core");
+        return false;
+    }
+
+    // Step 3: Verify device availability
+    SubGhzDevice *device = subghz_core_get_device(g_subghz_core);
+    if (!device) {
+        ESP_LOGE(TAG, "No SubGHz device available");
+        subghz_core_free(g_subghz_core);
+        g_subghz_core = NULL;
+        return false;
+    }
+
+    // Step 4: Test basic device functionality
+    if (!subghz_device_set_frequency(device, SUBGHZ_DEFAULT_FREQUENCY)) {
+        ESP_LOGE(TAG, "Failed to set default frequency");
+        subghz_core_free(g_subghz_core);
+        g_subghz_core = NULL;
+        return false;
+    }
+
+    if (!subghz_device_set_preset(device, SUBGHZ_DEFAULT_PRESET)) {
+        ESP_LOGE(TAG, "Failed to set default preset");
+        subghz_core_free(g_subghz_core);
+        g_subghz_core = NULL;
+        return false;
+    }
+
+    // Step 5: Initialize protocol registry (built-in protocols)
+    // This is done automatically when needed
+
+    g_subghz_initialized = true;
+
+    ESP_LOGI(TAG, "✅ SubGHz system initialized successfully");
+    ESP_LOGI(TAG, "📡 Device: %s", subghz_device_get_type_name(device->type));
+    ESP_LOGI(TAG, "🔧 Frequency: %.2f MHz", SUBGHZ_DEFAULT_FREQUENCY);
+    ESP_LOGI(TAG, "⚡ Preset: %s", subghz_get_preset_name(SUBGHZ_DEFAULT_PRESET));
+
+    // Print memory statistics
+    subghz_memory_print_stats();
+
+    return true;
+}
+
+void subghz_system_deinit(void) {
+    if (!g_subghz_initialized) { return; }
+
+    ESP_LOGI(TAG, "Deinitializing SubGHz system");
+
+    if (g_subghz_core) {
+        subghz_core_free(g_subghz_core);
+        g_subghz_core = NULL;
+    }
+
+    // Note: Memory system cleanup is optional as it may be shared
+
+    g_subghz_initialized = false;
+    ESP_LOGI(TAG, "SubGHz system deinitialized");
+}
+
+bool subghz_system_is_ready(void) { return g_subghz_initialized && g_subghz_core != NULL; }
+
+void subghz_quick_start_demo(void) {
+    ESP_LOGI(TAG, "🚀 Starting SubGHz Quick Demo");
+
+    if (!subghz_system_is_ready()) {
+        ESP_LOGI(TAG, "Initializing SubGHz system for demo...");
+        if (!subghz_system_init()) {
+            ESP_LOGE(TAG, "Failed to initialize SubGHz system");
+            return;
+        }
+    }
+
+    // Run comprehensive test
+    ESP_LOGI(TAG, "Running system tests...");
+    bool test_result = subghz_run_comprehensive_test();
+
+    if (test_result) {
+        ESP_LOGI(TAG, "🎉 SubGHz Demo Completed Successfully!");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "Available Features:");
+        ESP_LOGI(TAG, "  📊 Frequency Analyzer");
+        ESP_LOGI(TAG, "  📹 Signal Recorder");
+        ESP_LOGI(TAG, "  ▶️  Signal Player");
+        ESP_LOGI(TAG, "  🔍 Protocol Decoder");
+        ESP_LOGI(TAG, "  📡 Raw Signal Capture");
+        ESP_LOGI(TAG, "  ⚙️  Settings & Configuration");
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "Access through: Main Menu → SubGHz");
+    } else {
+        ESP_LOGE(TAG, "❌ SubGHz Demo Failed - Check logs for details");
+    }
+}
+
+void subghz_register_menu(void) {
+    // Menu registration is handled automatically through SubGHZMenu class
+    // in the main menu system
+    ESP_LOGI(TAG, "SubGHz menu registration handled by MainMenu");
+}
+
+// Helper function for quick Princeton signal transmission demo
+static void subghz_demo_princeton_transmission(void) {
+    if (!subghz_system_is_ready()) {
+        ESP_LOGE(TAG, "SubGHz system not ready for demo");
+        return;
+    }
+
+    ESP_LOGI(TAG, "🎯 Demonstrating Princeton Protocol Transmission");
+
+    // Get device
+    SubGhzDevice *device = subghz_core_get_device(g_subghz_core);
+    if (!device) {
+        ESP_LOGE(TAG, "No device available");
+        return;
+    }
+
+    // Create transmitter
+    SubGhzTransmitter *transmitter = subghz_transmitter_create(device);
+    if (!transmitter) {
+        ESP_LOGE(TAG, "Failed to create transmitter");
+        return;
+    }
+
+    // Configure transmitter
+    SubGhzTransmitterConfig config = {0};
+    config.frequency = 433.92f;
+    config.preset = SubGhzPreset2FSKDev476Async;
+    config.tx_power = 0; // Low power for demo
+    config.repeat = 3;
+    config.gap_ms = 100;
+    config.async_mode = true;
+
+    if (!subghz_transmitter_configure(transmitter, &config)) {
+        ESP_LOGE(TAG, "Failed to configure transmitter");
+        subghz_transmitter_free(transmitter);
+        return;
+    }
+
+    // Create Princeton test signal
+    // Pattern: 0x123456 (24-bit)
+    uint32_t princeton_signal[] = {
+        // Preamble
+        350,
+        1050,
+        350,
+        1050,
+        350,
+        1050,
+        350,
+        1050,
+
+        // Data bits for 0x123456
+        // Bit 0 (0): short high, long low
+        350,
+        1050,
+        // Bit 1 (0): short high, long low
+        350,
+        1050,
+        // Bit 2 (0): short high, long low
+        350,
+        1050,
+        // Bit 3 (1): long high, short low
+        1050,
+        350,
+        // ... (simplified for demo)
+
+        // Sync bit
+        350,
+        10500
+    };
+
+    size_t signal_size = sizeof(princeton_signal) / sizeof(princeton_signal[0]);
+
+    ESP_LOGI(TAG, "Transmitting Princeton signal (0x123456)...");
+
+    // Transmit signal
+    if (subghz_transmitter_send_async(transmitter, princeton_signal, signal_size, 3)) {
+        ESP_LOGI(TAG, "✅ Transmission started successfully");
+
+        // Wait for transmission to complete
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        // Get statistics
+        uint32_t packets_sent, repeat_count, error_count;
+        if (subghz_transmitter_get_stats(transmitter, &packets_sent, &repeat_count, &error_count)) {
+            ESP_LOGI(
+                TAG,
+                "📊 TX Stats: Packets: %u, Repeats: %u, Errors: %u",
+                packets_sent,
+                repeat_count,
+                error_count
+            );
+        }
+    } else {
+        ESP_LOGE(TAG, "❌ Failed to start transmission");
+    }
+
+    // Cleanup
+    subghz_transmitter_free(transmitter);
+    ESP_LOGI(TAG, "Princeton transmission demo completed");
+}
+
+// Helper function for quick receiver demo
+static void subghz_demo_receiver(void) {
+    if (!subghz_system_is_ready()) {
+        ESP_LOGE(TAG, "SubGHz system not ready for demo");
+        return;
+    }
+
+    ESP_LOGI(TAG, "📻 Demonstrating Protocol Receiver (5 seconds)");
+
+    // Get device
+    SubGhzDevice *device = subghz_core_get_device(g_subghz_core);
+    if (!device) {
+        ESP_LOGE(TAG, "No device available");
+        return;
+    }
+
+    // Create receiver
+    SubGhzReceiver *receiver = subghz_receiver_create(device);
+    if (!receiver) {
+        ESP_LOGE(TAG, "Failed to create receiver");
+        return;
+    }
+
+    // Configure receiver
+    SubGhzReceiverConfig config = {0};
+    config.frequency = 433.92f;
+    config.preset = SubGhzPreset2FSKDev476Async;
+    config.rssi_threshold = -80;
+    config.filter_enabled = false;
+    config.raw_capture_enabled = false;
+
+    if (!subghz_receiver_configure(receiver, &config)) {
+        ESP_LOGE(TAG, "Failed to configure receiver");
+        subghz_receiver_free(receiver);
+        return;
+    }
+
+    // Start receiver
+    if (subghz_receiver_start(receiver)) {
+        ESP_LOGI(TAG, "✅ Receiver started - listening for 5 seconds...");
+        ESP_LOGI(TAG, "📊 Current RSSI: %d dBm", subghz_receiver_get_rssi(receiver));
+
+        // Listen for 5 seconds
+        for (int i = 0; i < 50; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+            // Update RSSI every second
+            if (i % 10 == 0) {
+                int32_t rssi = subghz_receiver_get_rssi(receiver);
+                ESP_LOGI(TAG, "📊 RSSI: %d dBm", rssi);
+            }
+        }
+
+        // Get statistics
+        uint32_t packets_received, packets_decoded, error_count;
+        if (subghz_receiver_get_stats(receiver, &packets_received, &packets_decoded, &error_count)) {
+            ESP_LOGI(
+                TAG,
+                "📊 RX Stats: Received: %u, Decoded: %u, Errors: %u",
+                packets_received,
+                packets_decoded,
+                error_count
+            );
+        }
+
+        subghz_receiver_stop(receiver);
+    } else {
+        ESP_LOGE(TAG, "❌ Failed to start receiver");
+    }
+
+    // Cleanup
+    subghz_receiver_free(receiver);
+    ESP_LOGI(TAG, "Receiver demo completed");
+}
+
+// Extended demo function with more features
+void subghz_extended_demo(void) {
+    ESP_LOGI(TAG, "🚀 Starting Extended SubGHz Demo");
+
+    if (!subghz_system_init()) {
+        ESP_LOGE(TAG, "Failed to initialize SubGHz system");
+        return;
+    }
+
+    ESP_LOGI(TAG, "=== SubGHz Extended Demo ===");
+    ESP_LOGI(TAG, "");
+
+    // Demo 1: System Status
+    ESP_LOGI(TAG, "1️⃣  System Status Check");
+    ESP_LOGI(TAG, "   System Ready: %s", subghz_system_is_ready() ? "✅ YES" : "❌ NO");
+    ESP_LOGI(TAG, "   Version: %s", SUBGHZ_VERSION_STRING);
+    ESP_LOGI(TAG, "");
+
+    // Demo 2: Memory System
+    ESP_LOGI(TAG, "2️⃣  Memory System Test");
+    subghz_memory_print_stats();
+    ESP_LOGI(TAG, "");
+
+    // Demo 3: Protocol System
+    ESP_LOGI(TAG, "3️⃣  Protocol System Test");
+    subghz_test_protocol_system();
+    ESP_LOGI(TAG, "");
+
+    // Demo 4: Receiver Demo
+    ESP_LOGI(TAG, "4️⃣  Receiver Demo");
+    subghz_demo_receiver();
+    ESP_LOGI(TAG, "");
+
+    // Demo 5: Transmitter Demo
+    ESP_LOGI(TAG, "5️⃣  Transmitter Demo");
+    subghz_demo_princeton_transmission();
+    ESP_LOGI(TAG, "");
+
+    ESP_LOGI(TAG, "🎉 Extended SubGHz Demo Completed!");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "Next Steps:");
+    ESP_LOGI(TAG, "  → Access SubGHz menu in Bruce main menu");
+    ESP_LOGI(TAG, "  → Try Frequency Analyzer for signal hunting");
+    ESP_LOGI(TAG, "  → Use Signal Recorder to capture transmissions");
+    ESP_LOGI(TAG, "  → Experiment with Protocol Decoder");
+}

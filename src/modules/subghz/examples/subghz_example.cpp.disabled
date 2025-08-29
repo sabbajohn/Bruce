@@ -1,0 +1,494 @@
+/**
+ * @file subghz_example.cpp
+ * @brief Complete example demonstrating SubGHz module usage
+ *
+ * This example shows how to use all major components of the SubGHz module
+ * in a real-world scenario.
+ */
+
+#include "subghz/subghz_integration.h"
+#include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+static const char *TAG = "SubGhzExample";
+
+// Example callback for protocol detection
+void example_protocol_callback(void *context, SubGhzProtocolConfig *protocol_config) {
+    ESP_LOGI(TAG, "🎯 Protocol Detected!");
+    ESP_LOGI(TAG, "   Name: %s", protocol_config->name);
+    ESP_LOGI(TAG, "   Frequency: %.2f MHz", protocol_config->frequency);
+    ESP_LOGI(TAG, "   Data Size: %d bytes", (int)protocol_config->data_size);
+
+    // Print first 8 bytes of data as hex
+    if (protocol_config->data_size > 0) {
+        ESP_LOGI(TAG, "   Data: ");
+        for (size_t i = 0; i < protocol_config->data_size && i < 8; i++) {
+            ESP_LOGI(TAG, "     [%d]: 0x%02X", (int)i, protocol_config->data[i]);
+        }
+    }
+}
+
+// Example callback for raw signal capture
+void example_raw_signal_callback(void *context, bool level, uint32_t duration) {
+    static int signal_count = 0;
+
+    // Log first 10 signals only (to avoid spam)
+    if (signal_count < 10) {
+        ESP_LOGI(TAG, "📡 Raw Signal: %s for %u μs", level ? "HIGH" : "LOW", duration);
+        signal_count++;
+    }
+
+    if (signal_count == 10) {
+        ESP_LOGI(TAG, "... (raw signal logging disabled after 10 samples)");
+        signal_count++;
+    }
+}
+
+// Example callback for transmission events
+void example_transmission_callback(void *context, SubGhzTransmitterEvent event) {
+    switch (event) {
+        case SUBGHZ_TRANSMITTER_EVENT_START: ESP_LOGI(TAG, "📤 Transmission Started"); break;
+        case SUBGHZ_TRANSMITTER_EVENT_COMPLETE: ESP_LOGI(TAG, "✅ Transmission Completed"); break;
+        case SUBGHZ_TRANSMITTER_EVENT_STOP: ESP_LOGI(TAG, "🛑 Transmission Stopped"); break;
+        case SUBGHZ_TRANSMITTER_EVENT_ERROR: ESP_LOGE(TAG, "❌ Transmission Error"); break;
+    }
+}
+
+// Example 1: Basic system usage
+void example_basic_usage() {
+    ESP_LOGI(TAG, "\n=== Example 1: Basic System Usage ===");
+
+    // Initialize the system
+    if (!subghz_system_init()) {
+        ESP_LOGE(TAG, "Failed to initialize SubGHz system");
+        return;
+    }
+
+    ESP_LOGI(TAG, "✅ SubGHz system initialized");
+    ESP_LOGI(TAG, "System ready: %s", subghz_system_is_ready() ? "YES" : "NO");
+
+    // Print memory statistics
+    subghz_memory_print_stats();
+}
+
+// Example 2: Protocol detection
+void example_protocol_detection() {
+    ESP_LOGI(TAG, "\n=== Example 2: Protocol Detection ===");
+
+    // Create core and get device
+    SubGhzCore *core = subghz_core_create();
+    if (!core) {
+        ESP_LOGE(TAG, "Failed to create core");
+        return;
+    }
+
+    SubGhzDevice *device = subghz_core_get_device(core);
+    if (!device) {
+        ESP_LOGE(TAG, "Failed to get device");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Create receiver
+    SubGhzReceiver *receiver = subghz_receiver_create(device);
+    if (!receiver) {
+        ESP_LOGE(TAG, "Failed to create receiver");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Configure receiver for protocol detection
+    SubGhzReceiverConfig config = {0};
+    config.frequency = 433.92f;
+    config.preset = SubGhzPreset2FSKDev476Async;
+    config.rssi_threshold = -80;
+    config.filter_enabled = false;
+    config.raw_capture_enabled = false;
+
+    if (!subghz_receiver_configure(receiver, &config)) {
+        ESP_LOGE(TAG, "Failed to configure receiver");
+        subghz_receiver_free(receiver);
+        subghz_core_free(core);
+        return;
+    }
+
+    // Set callback for protocol detection
+    subghz_receiver_set_callback(receiver, example_protocol_callback, NULL);
+
+    // Start receiver
+    if (subghz_receiver_start(receiver)) {
+        ESP_LOGI(TAG, "🎧 Listening for protocols on 433.92 MHz...");
+        ESP_LOGI(TAG, "Press any button to stop (demo will auto-stop in 10 seconds)");
+
+        // Listen for 10 seconds
+        for (int i = 0; i < 100; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+
+            // Print RSSI every 2 seconds
+            if (i % 20 == 0) {
+                int32_t rssi = subghz_receiver_get_rssi(receiver);
+                ESP_LOGI(TAG, "📊 Current RSSI: %d dBm", rssi);
+            }
+        }
+
+        subghz_receiver_stop(receiver);
+        ESP_LOGI(TAG, "🛑 Protocol detection stopped");
+
+        // Get statistics
+        uint32_t packets_received, packets_decoded, error_count;
+        if (subghz_receiver_get_stats(receiver, &packets_received, &packets_decoded, &error_count)) {
+            ESP_LOGI(TAG, "📊 Final Stats:");
+            ESP_LOGI(TAG, "   Packets Received: %u", packets_received);
+            ESP_LOGI(TAG, "   Packets Decoded: %u", packets_decoded);
+            ESP_LOGI(TAG, "   Errors: %u", error_count);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to start receiver");
+    }
+
+    // Cleanup
+    subghz_receiver_free(receiver);
+    subghz_core_free(core);
+}
+
+// Example 3: Signal transmission
+void example_signal_transmission() {
+    ESP_LOGI(TAG, "\n=== Example 3: Signal Transmission ===");
+
+    // Create core and get device
+    SubGhzCore *core = subghz_core_create();
+    if (!core) {
+        ESP_LOGE(TAG, "Failed to create core");
+        return;
+    }
+
+    SubGhzDevice *device = subghz_core_get_device(core);
+    if (!device) {
+        ESP_LOGE(TAG, "Failed to get device");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Create transmitter
+    SubGhzTransmitter *transmitter = subghz_transmitter_create(device);
+    if (!transmitter) {
+        ESP_LOGE(TAG, "Failed to create transmitter");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Configure transmitter
+    SubGhzTransmitterConfig config = {0};
+    config.frequency = 433.92f;
+    config.preset = SubGhzPreset2FSKDev476Async;
+    config.tx_power = 0; // Low power for demo
+    config.repeat = 3;
+    config.gap_ms = 200;
+    config.async_mode = true;
+
+    if (!subghz_transmitter_configure(transmitter, &config)) {
+        ESP_LOGE(TAG, "Failed to configure transmitter");
+        subghz_transmitter_free(transmitter);
+        subghz_core_free(core);
+        return;
+    }
+
+    // Set transmission callback
+    subghz_transmitter_set_callback(transmitter, example_transmission_callback, NULL);
+
+    // Create a Princeton-style test signal
+    // This represents a 24-bit code: 0x123456
+    uint32_t test_signal[] = {
+        // Preamble (sync pattern)
+        350,
+        1050,
+        350,
+        1050,
+        350,
+        1050,
+        350,
+        1050,
+
+        // Start bit
+        350,
+        10500,
+
+        // Data bits (simplified Princeton encoding)
+        // Each bit: 0 = short pulse + long gap, 1 = long pulse + short gap
+        350,
+        1050, // 0
+        350,
+        1050, // 0
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+
+        // More data bits...
+        1050,
+        350, // 1
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+
+        // Final bits
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+        1050,
+        350, // 1
+        1050,
+        350, // 1
+        350,
+        1050, // 0
+        350,
+        1050, // 0
+
+        // End guard
+        350,
+        10500
+    };
+
+    size_t signal_size = sizeof(test_signal) / sizeof(test_signal[0]);
+
+    ESP_LOGI(TAG, "📤 Transmitting test signal...");
+    ESP_LOGI(TAG, "   Frequency: %.2f MHz", config.frequency);
+    ESP_LOGI(TAG, "   Power: %d dBm", config.tx_power);
+    ESP_LOGI(TAG, "   Repeats: %u", config.repeat);
+    ESP_LOGI(TAG, "   Signal Length: %d samples", (int)signal_size);
+
+    // Start transmission
+    if (subghz_transmitter_send_async(transmitter, test_signal, signal_size, config.repeat)) {
+        ESP_LOGI(TAG, "✅ Transmission started successfully");
+
+        // Wait for transmission to complete
+        vTaskDelay(pdMS_TO_TICKS(3000));
+
+        // Get statistics
+        uint32_t packets_sent, repeat_count, error_count;
+        if (subghz_transmitter_get_stats(transmitter, &packets_sent, &repeat_count, &error_count)) {
+            ESP_LOGI(TAG, "📊 Transmission Stats:");
+            ESP_LOGI(TAG, "   Packets Sent: %u", packets_sent);
+            ESP_LOGI(TAG, "   Total Repeats: %u", repeat_count);
+            ESP_LOGI(TAG, "   Errors: %u", error_count);
+        }
+    } else {
+        ESP_LOGE(TAG, "❌ Failed to start transmission");
+    }
+
+    // Cleanup
+    subghz_transmitter_free(transmitter);
+    subghz_core_free(core);
+}
+
+// Example 4: Raw signal capture
+void example_raw_signal_capture() {
+    ESP_LOGI(TAG, "\n=== Example 4: Raw Signal Capture ===");
+
+    // Create core and get device
+    SubGhzCore *core = subghz_core_create();
+    if (!core) {
+        ESP_LOGE(TAG, "Failed to create core");
+        return;
+    }
+
+    SubGhzDevice *device = subghz_core_get_device(core);
+    if (!device) {
+        ESP_LOGE(TAG, "Failed to get device");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Create receiver for raw capture
+    SubGhzReceiver *receiver = subghz_receiver_create(device);
+    if (!receiver) {
+        ESP_LOGE(TAG, "Failed to create receiver");
+        subghz_core_free(core);
+        return;
+    }
+
+    // Configure for raw signal capture
+    SubGhzReceiverConfig config = {0};
+    config.frequency = 433.92f;
+    config.preset = SubGhzPreset2FSKDev476Async;
+    config.rssi_threshold = -70; // Higher threshold for raw capture
+    config.filter_enabled = false;
+    config.raw_capture_enabled = true; // Enable raw capture
+
+    if (!subghz_receiver_configure(receiver, &config)) {
+        ESP_LOGE(TAG, "Failed to configure receiver for raw capture");
+        subghz_receiver_free(receiver);
+        subghz_core_free(core);
+        return;
+    }
+
+    // Set raw signal callback
+    subghz_receiver_set_raw_callback(receiver, example_raw_signal_callback, NULL);
+
+    // Start raw capture
+    if (subghz_receiver_start(receiver)) {
+        ESP_LOGI(TAG, "📡 Raw signal capture started on 433.92 MHz");
+        ESP_LOGI(TAG, "RSSI threshold: %d dBm", config.rssi_threshold);
+        ESP_LOGI(TAG, "Capturing for 5 seconds...");
+
+        // Capture for 5 seconds
+        vTaskDelay(pdMS_TO_TICKS(5000));
+
+        subghz_receiver_stop(receiver);
+        ESP_LOGI(TAG, "🛑 Raw signal capture stopped");
+
+        // Get statistics
+        uint32_t packets_received, packets_decoded, error_count;
+        if (subghz_receiver_get_stats(receiver, &packets_received, &packets_decoded, &error_count)) {
+            ESP_LOGI(TAG, "📊 Capture Stats:");
+            ESP_LOGI(TAG, "   Raw Signals: %u", packets_received);
+            ESP_LOGI(TAG, "   Protocols Detected: %u", packets_decoded);
+            ESP_LOGI(TAG, "   Errors: %u", error_count);
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to start raw capture");
+    }
+
+    // Cleanup
+    subghz_receiver_free(receiver);
+    subghz_core_free(core);
+}
+
+// Example 5: Memory management demonstration
+void example_memory_management() {
+    ESP_LOGI(TAG, "\n=== Example 5: Memory Management ===");
+
+    // Show initial memory state
+    ESP_LOGI(TAG, "Initial memory state:");
+    subghz_memory_print_stats();
+
+    // Allocate memory from different pools
+    ESP_LOGI(TAG, "\nAllocating memory from different pools...");
+
+    void *protocol_mem = subghz_memory_alloc(SUBGHZ_MEMORY_POOL_PROTOCOL, 1024);
+    void *signal_mem = subghz_memory_alloc(SUBGHZ_MEMORY_POOL_SIGNAL, 2048);
+    void *string_mem = subghz_memory_alloc(SUBGHZ_MEMORY_POOL_STRING, 512);
+    void *temp_mem = subghz_memory_alloc(SUBGHZ_MEMORY_POOL_TEMP, 256);
+
+    ESP_LOGI(TAG, "Allocated:");
+    ESP_LOGI(TAG, "  Protocol: %s", protocol_mem ? "✅ 1024 bytes" : "❌ FAILED");
+    ESP_LOGI(TAG, "  Signal: %s", signal_mem ? "✅ 2048 bytes" : "❌ FAILED");
+    ESP_LOGI(TAG, "  String: %s", string_mem ? "✅ 512 bytes" : "❌ FAILED");
+    ESP_LOGI(TAG, "  Temp: %s", temp_mem ? "✅ 256 bytes" : "❌ FAILED");
+
+    // Show memory state after allocation
+    ESP_LOGI(TAG, "\nMemory state after allocation:");
+    subghz_memory_print_stats();
+
+    // Test zero-initialized allocation
+    ESP_LOGI(TAG, "\nTesting zero-initialized allocation...");
+    uint8_t *zero_mem = (uint8_t *)subghz_memory_alloc(SUBGHZ_MEMORY_POOL_TEMP, 128);
+    if (zero_mem) {
+        bool all_zero = true;
+        for (int i = 0; i < 128; i++) {
+            if (zero_mem[i] != 0) {
+                all_zero = false;
+                break;
+            }
+        }
+        ESP_LOGI(TAG, "Zero initialization: %s", all_zero ? "✅ PASSED" : "❌ FAILED");
+    }
+
+    // Test integrity checking
+    ESP_LOGI(TAG, "\nTesting memory integrity...");
+    bool integrity_ok = subghz_memory_check_integrity(SUBGHZ_MEMORY_POOL_COUNT);
+    ESP_LOGI(TAG, "Memory integrity: %s", integrity_ok ? "✅ PASSED" : "❌ FAILED");
+
+    // Free all allocated memory
+    ESP_LOGI(TAG, "\nFreeing allocated memory...");
+    if (protocol_mem) subghz_memory_free(SUBGHZ_MEMORY_POOL_PROTOCOL, protocol_mem);
+    if (signal_mem) subghz_memory_free(SUBGHZ_MEMORY_POOL_SIGNAL, signal_mem);
+    if (string_mem) subghz_memory_free(SUBGHZ_MEMORY_POOL_STRING, string_mem);
+    if (temp_mem) subghz_memory_free(SUBGHZ_MEMORY_POOL_TEMP, temp_mem);
+    if (zero_mem) subghz_memory_free(SUBGHZ_MEMORY_POOL_TEMP, zero_mem);
+
+    // Show final memory state
+    ESP_LOGI(TAG, "\nFinal memory state:");
+    subghz_memory_print_stats();
+}
+
+// Main example function
+void subghz_run_complete_example() {
+    ESP_LOGI(TAG, "🚀 Starting Complete SubGHz Example");
+    ESP_LOGI(TAG, "SubGHz Module Version: %s", SUBGHZ_VERSION_STRING);
+    ESP_LOGI(TAG, "========================================\n");
+
+    // Run all examples
+    example_basic_usage();
+    example_memory_management();
+    example_protocol_detection();
+    example_signal_transmission();
+    example_raw_signal_capture();
+
+    ESP_LOGI(TAG, "\n========================================");
+    ESP_LOGI(TAG, "🎉 Complete SubGHz Example Finished!");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "What you've seen:");
+    ESP_LOGI(TAG, "  ✅ System initialization and status");
+    ESP_LOGI(TAG, "  ✅ Memory management with pools");
+    ESP_LOGI(TAG, "  ✅ Real-time protocol detection");
+    ESP_LOGI(TAG, "  ✅ Signal transmission with callbacks");
+    ESP_LOGI(TAG, "  ✅ Raw signal capture and analysis");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "Next steps:");
+    ESP_LOGI(TAG, "  → Explore the Bruce UI interface");
+    ESP_LOGI(TAG, "  → Try frequency scanning");
+    ESP_LOGI(TAG, "  → Record and replay real signals");
+    ESP_LOGI(TAG, "  → Develop custom protocols");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "Happy RF hacking! 📡✨");
+}
+
+// Task wrapper for running the example
+void subghz_example_task(void *pvParameters) {
+    // Wait for system to stabilize
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Run the complete example
+    subghz_run_complete_example();
+
+    // Task complete
+    vTaskDelete(NULL);
+}
+
+// Start the example as a FreeRTOS task
+void subghz_start_example() {
+    xTaskCreate(
+        subghz_example_task,
+        "subghz_example",
+        8192, // Stack size
+        NULL,
+        tskIDLE_PRIORITY + 1,
+        NULL
+    );
+}
